@@ -1,0 +1,123 @@
+﻿<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Silver Hawk Online</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            background: #000;
+            color: #9fd3ff;
+            font-family: "Segoe UI", system-ui, sans-serif;
+            overflow: hidden;
+        }
+
+        #title {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 22px;
+            background: radial-gradient(ellipse at 50% 60%, #0b2540 0%, #000 70%);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(36px, 8vw, 96px);
+            letter-spacing: .25em;
+            font-weight: 200;
+            text-shadow: 0 0 24px #2b8cff;
+        }
+
+        button {
+            font: inherit;
+            font-size: 20px;
+            letter-spacing: .3em;
+            padding: 12px 40px;
+            color: #9fd3ff;
+            background: transparent;
+            border: 1px solid #2b8cff;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: #2b8cff33;
+        }
+
+        button:disabled {
+            opacity: .4;
+            cursor: default;
+        }
+
+        #status {
+            min-height: 1.4em;
+            font-size: 14px;
+            opacity: .8;
+        }
+
+        #footer {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 10px;
+            text-align: center;
+            font-size: 12px;
+            opacity: .6;
+            line-height: 1.6;
+        }
+
+        #footer a {
+            color: #9fd3ff;
+        }
+
+        #screen {
+            display: none;
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            image-rendering: pixelated;
+            width: min(100vw, 133.333vh);
+            height: min(75vw, 100vh);
+            background: #000;
+        }
+    </style>
+    <link rel="icon" href="data:,">
+</head>
+
+<body>
+    <div id="title">
+        <h1>SILVER HAWK</h1>
+        <div id="setup" style="display:flex;flex-direction:column;gap:6px;font-size:14px;align-items:center">
+            <div id="biosState">BIOS: not added</div>
+            <label>Add BIOS (.bin) <input type="file" id="biosFile" accept=".bin"></label>
+            <div id="discState">Disc: not added</div>
+            <label>Add disc (.chd) <input type="file" id="discFile" accept=".chd"></label>
+            <div style="opacity:.6;font-size:12px">Stays in this browser. Never uploaded.</div>
+        </div>
+        <button id="start">Start (solo)</button>
+        <div style="display:flex;gap:10px;align-items:center">
+            <input id="room" placeholder="room code" value="room1"
+                style="font:inherit;padding:10px;background:#000;color:#9fd3ff;border:1px solid #2b8cff;width:140px">
+            <button id="online">Co-op Online</button>
+        </div>
+        <div id="status"></div>
+        <div id="footer">
+            Bring your own BIOS and disc. No game files are included or hosted here.<br>
+            Built on PCSX-ReARMed (GPL).
+            <a href="https://github.com/Duuustyyy/silverhawk-online" target="_blank" rel="noopener">Source code</a>
+        </div>
+    </div>
+    <canvas id="screen" width="320" height="240"></canvas>
+    <div id="hud" style="position:fixed;left:8px;top:6px;font:12px monospace;color:#9fd3ff;opacity:.8"></div>
+    <script type="module" src="./main.js"></script>
+</body>
+
+</html>

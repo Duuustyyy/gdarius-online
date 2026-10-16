@@ -1,0 +1,21 @@
+﻿# Never publish game data
+assets/
+*.chd
+*.bin
+*.cue
+*.iso
+*.img
+
+# Core is a separate upstream clone, not part of this repo
+core/
+
+# Build outputs and local files
+web/wasm/
+cf/dist/
+cf/.wrangler/
+node_modules/
+scratch/
+*.log
+.dev.vars
+.env
+wrapper/libpcsx.a
