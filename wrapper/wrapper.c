@@ -11,6 +11,11 @@
 #define FB_MAX_H 512
 #define AUDIO_MAX_FRAMES 8192
 
+/* PSX CPU clock in percent. "auto" = core default (57). Higher = more CPU
+   headroom for the game, so less in-game slowdown. BOTH online players must
+   run the same value, so keep it a constant in the build. */
+#define GD_PSXCLOCK "100"
+
 static char g_sys_dir[256]  = "/system";
 static char g_save_dir[256] = "/saves";
 static unsigned g_pixfmt = RETRO_PIXEL_FORMAT_0RGB1555;
@@ -32,7 +37,16 @@ static bool env_cb(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:     g_pixfmt = *(unsigned *)data;      return true;
   case RETRO_ENVIRONMENT_GET_CAN_DUPE:         *(bool *)data = true;              return true;
   case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:  *(bool *)data = false;             return true;
-  case RETRO_ENVIRONMENT_GET_VARIABLE:         ((struct retro_variable *)data)->value = NULL; return false;
+  case RETRO_ENVIRONMENT_GET_VARIABLE: {
+    struct retro_variable *v = (struct retro_variable *)data;
+    v->value = NULL;
+    if (v->key && !strcmp(v->key, "pcsx_rearmed_psxclock")) { v->value = GD_PSXCLOCK; return true; }
+    return false;
+  }
+  case 6:  /* SET_MESSAGE */
+  case 60: /* SET_MESSAGE_EXT (msg is the first field in both structs) */
+    if (data && *(const char **)data) fprintf(stderr, "[core] %s\n", *(const char **)data);
+    return true;
   case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:    ((struct retro_log_callback *)data)->log = log_cb; return true;
   case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:   return true;
   case RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL:return true;

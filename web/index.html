@@ -1,10 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Silver Hawk Online</title>
+    <title>G-Darius Online</title>
     <link rel="icon" href="./icon.ico" sizes="any">
     <style>
         :root {
@@ -228,6 +228,83 @@
             opacity: .8;
             pointer-events: none;
         }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        #room {
+            text-transform: uppercase;
+        }
+
+        #lobby {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .lobpane {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            min-width: min(92vw, 360px);
+            border: 1px solid #2b8cff44;
+            background: #00000066;
+            text-align: center;
+        }
+
+        .lobor {
+            font-size: 11px;
+            opacity: .6;
+            letter-spacing: .15em;
+            text-transform: uppercase;
+        }
+
+        #lobCode {
+            font-size: 30px;
+            letter-spacing: .35em;
+            margin-right: -.35em;
+            color: var(--ok);
+        }
+
+        #lobLink {
+            font: 11px monospace;
+            opacity: .6;
+            user-select: all;
+            word-break: break-all;
+        }
+
+        #lobInfo {
+            font-size: 13px;
+            min-height: 1.4em;
+        }
+
+        #lobMsg {
+            font-size: 13px;
+            color: #ff9b9b;
+            min-height: 1.2em;
+        }
+
+        #gone {
+            position: fixed;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            background: #000000d9;
+            text-align: center;
+        }
+
+        #gone .big {
+            font-size: 18px;
+            letter-spacing: .2em;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 
@@ -247,9 +324,31 @@
 
         <button id="start">Start (solo)</button>
 
-        <div class="row">
-            <input id="room" placeholder="room code" value="room1" maxlength="24" autocomplete="off" spellcheck="false">
+        <div class="row" id="menuRow">
             <button id="online">Co-op Online</button>
+        </div>
+
+        <div id="lobby" hidden>
+            <div id="lobHome" class="lobpane" hidden>
+                <button id="lobCreate">Create game</button>
+                <div class="lobor">or join with a code</div>
+                <div class="row">
+                    <input id="room" placeholder="code" maxlength="24" autocomplete="off" spellcheck="false">
+                    <button id="lobJoin">Join</button>
+                </div>
+                <div id="lobMsg"></div>
+                <button id="lobBack">Back</button>
+            </div>
+            <div id="lobWait" class="lobpane" hidden>
+                <div id="lobCode"></div>
+                <div id="lobLink"></div>
+                <button id="lobCopy">Copy invite link</button>
+                <div id="lobInfo"></div>
+                <div class="row">
+                    <button id="lobReady" hidden>Ready</button>
+                    <button id="lobCancel">Cancel</button>
+                </div>
+            </div>
         </div>
 
         <div id="status"></div>
@@ -270,6 +369,10 @@
 
     <canvas id="screen" width="320" height="240"></canvas>
     <div id="hud"></div>
+    <div id="gone" hidden>
+        <div class="big">The other player disconnected</div>
+        <button id="goneBtn">Back to lobby</button>
+    </div>
 
     <script>
         // Green status when a file is added (works with whatever text main.js writes)

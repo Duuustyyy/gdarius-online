@@ -9,7 +9,7 @@ const setStatus = (s) => ($("status").textContent = s);
 
 // ---- input (bindings come from controls.js and are changed on the title screen)
 let keyMask = 0;
-const typing = (e) => e.target instanceof HTMLInputElement;     // don't steal keys while typing the room code
+const typing = (e) => e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement;   // don't steal keys from the room box or a focused button
 addEventListener("keydown", (e) => {
     if (typing(e)) return;
     if (e.code in KEYMAP) { keyMask |= 1 << KEYMAP[e.code]; e.preventDefault(); }
@@ -131,6 +131,9 @@ async function boot() {
     stateBuf = M._malloc(stateSize);
 }
 
+let booted = false;
+async function ensureBoot() { if (booted) return; await boot(); booted = true; }
+
 function run(stepFn) {
     document.activeElement?.blur?.();                     // don't leave the room-code box focused
     $("title").style.display = "none";
@@ -148,145 +151,253 @@ function run(stepFn) {
 }
 
 // ---------------- solo ----------------
+// While loading, the pressed button keeps a lit look and the other buttons dim.
+let loading = false;
+function setBusy(btn, on) {
+    loading = on;
+    for (const id of ["start", "online", "ctlBtn"]) { const el = $(id); if (el && el !== btn) el.disabled = on; }
+    btn.style.background = on ? "#2b8cff40" : "";
+    btn.style.boxShadow = on ? "0 0 16px #2b8cff66" : "";
+    btn.style.cursor = on ? "progress" : "";
+}
+
 $("start").onclick = async () => {
-    $("start").disabled = $("online").disabled = true;
+    if (loading) return;
+    setBusy($("start"), true);
     try {
-        await boot();
+        await ensureBoot();
         run(() => { M._gd_set_pad(0, sample()); M._gd_run(); pushAudio(); return true; });
-    } catch (e) { console.error(e); setStatus("Error: " + e.message); $("start").disabled = $("online").disabled = false; }
+    } catch (e) { console.error(e); setStatus("Error: " + e.message); setBusy($("start"), false); refreshSetup(); }
 };
 
-// ---------------- online lockstep ----------------
+// ---------------- lobby ----------------
+const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
+const setInfo = (s) => { $("lobInfo").textContent = s; };
+function lobbyView(v) {                                  // "off" | "home" | "wait"
+    for (const id of ["start", "ctlBtn", "menuRow"]) show(id, v === "off");
+    show("lobby", v !== "off"); show("lobHome", v === "home"); show("lobWait", v === "wait");
+}
+const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";     // no 0/O/1/I
+const newCode = () => Array.from({ length: 5 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join("");
+const cleanCode = (s) => s.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 24);
+let abort = null, teardown = null, inviteUrl = "";
+
+const qroom = new URLSearchParams(location.search).get("room");
+if (qroom) { $("room").value = cleanCode(qroom); setStatus("You were invited to a game: press Co-op Online, then Join."); }
+
 $("online").onclick = async () => {
-    $("start").disabled = $("online").disabled = true;
+    if (loading) return;
+    setBusy($("online"), true);
+    try { await ensureBoot(); setStatus(""); lobbyView("home"); }
+    catch (e) { console.error(e); setStatus("Error: " + e.message); }
+    setBusy($("online"), false);
+    refreshSetup();
+};
+$("lobBack").onclick = () => lobbyView("off");
+$("lobCreate").onclick = () => enter(newCode(), "create");
+$("lobJoin").onclick = () => {
+    const c = cleanCode($("room").value);
+    if (!c) { $("lobMsg").textContent = "Type the game code first"; return; }
+    enter(c, "join");
+};
+$("room").onkeydown = (e) => { if (e.key === "Enter") $("lobJoin").click(); };
+$("lobCancel").onclick = () => { abort?.abort(); teardown?.(); };
+$("lobCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(inviteUrl); $("lobCopy").textContent = "Copied!"; }
+    catch { $("lobCopy").textContent = "Select the link below"; }
+    setTimeout(() => ($("lobCopy").textContent = "Copy invite link"), 1800);
+};
+function showGone() {
+    $("hud").textContent = "";
+    show("gone", true);
+}
+$("goneBtn").onclick = () => {                           // the game core can't be reused after a match: start clean
+    const u = new URL(location.href); u.searchParams.delete("room"); location.href = u.toString();
+};
+
+async function enter(code, mode) {
+    abort = new AbortController();
+    inviteUrl = `${location.origin}/?room=${encodeURIComponent(code)}`;
+    $("lobCode").textContent = code;
+    $("lobLink").textContent = inviteUrl;
+    show("lobCopy", mode === "create"); show("lobLink", mode === "create");
+    show("lobReady", false);
+    $("lobMsg").textContent = "";
+    setInfo("Connecting to server...");
+    lobbyView("wait");
+    let conn = null;
     try {
-        await boot();
-        const { port, dc, cc } = await connect($("room").value.trim() || "room1", setStatus);
-        const other = 1 - port, hud = $("hud");
+        conn = await connect(code, setInfo, { mode, signal: abort.signal });
+        await onlineSession(conn);                       // resolves when the game starts
+    } catch (e) {
+        console.error(e);
+        try { conn?.dc.close(); conn?.cc.close(); } catch { }
+        $("lobMsg").textContent = e.message === "Cancelled" ? "" : e.message;
+        lobbyView("home");
+    } finally { teardown = null; abort = null; }
+}
 
-        // both players must have the same BIOS and disc, or the game desyncs
-        let peerId = null, gotId;
-        const idPromise = new Promise((r) => (gotId = r));
-        cc.onmessage = (e) => { const [t, v] = e.data.split(","); if (t === "id") { peerId = v; gotId(); } };
-        cc.send(`id,${ident}`);
-        await idPromise;
-        if (peerId !== ident) throw new Error("Your BIOS or disc differs from the other player's");
+// ---------------- online lockstep ----------------
+async function onlineSession({ port, dc, cc }) {
+    const other = 1 - port, hud = $("hud");
+    let started = false, closed = false, idOk = false;
+    let myReady = false, peerReady = false, going = false, peerId = null;
+    let resolveId, resolveStart, rejectGone;
+    const idP = new Promise((r) => (resolveId = r));
+    const startedP = new Promise((r) => (resolveStart = r));
+    const goneP = new Promise((_, rej) => (rejectGone = rej));
+    goneP.catch(() => { });
+    const until = (p) => Promise.race([p, goneP]);      // stop waiting if the peer leaves or we cancel
+    teardown = () => { try { dc.close(); cc.close(); } catch { } rejectGone(new Error("Cancelled")); };
 
-        // ---- debug network simulation, applied to what THIS window sends: ?lag=40&jitter=20&loss=3
-        const qs = new URLSearchParams(location.search);
-        const LAG = +qs.get("lag") || 0, JIT = +qs.get("jitter") || 0, LOSS = (+qs.get("loss") || 0) / 100;
-        const safe = (c, m) => { try { c.send(m); } catch { } };
-        const sendG = (m) => {                                  // game channel: delay, jitter (can reorder), loss
-            if (Math.random() < LOSS) return;
-            const d = LAG + Math.random() * JIT;
-            d > 0 ? setTimeout(() => safe(dc, m), d) : safe(dc, m);
-        };
-        let lastT = 0;
-        const sendC = (m) => {                                  // control channel: delay only, stays ordered
-            const now = performance.now();
-            const t = Math.max(now + LAG + Math.random() * JIT, lastT); lastT = t;
-            t > now ? setTimeout(() => safe(cc, m), t - now) : safe(cc, m);
-        };
+    // ---- debug network simulation, applied to what THIS window sends: ?lag=40&jitter=20&loss=3
+    const qs = new URLSearchParams(location.search);
+    const LAG = +qs.get("lag") || 0, JIT = +qs.get("jitter") || 0, LOSS = (+qs.get("loss") || 0) / 100;
+    const safe = (c, m) => { try { c.send(m); } catch { } };
+    const sendG = (m) => {                                  // game channel: delay, jitter (can reorder), loss
+        if (Math.random() < LOSS) return;
+        const d = LAG + Math.random() * JIT;
+        d > 0 ? setTimeout(() => safe(dc, m), d) : safe(dc, m);
+    };
+    let lastT = 0;
+    const sendC = (m) => {                                  // control channel: delay only, stays ordered
+        const now = performance.now();
+        const t = Math.max(now + LAG + Math.random() * JIT, lastT); lastT = t;
+        t > now ? setTimeout(() => safe(cc, m), t - now) : safe(cc, m);
+    };
 
-        // ---- state
-        const inputs = [new Map(), new Map()];                  // player -> (frame -> mask)
-        const mine = new Map(), theirs = new Map();
-        const rtts = [];
-        let D = 0, frame = 0, nextLocal = 0, recvUpTo = -1, theirAck = -1, lastTheirHash = -1;
-        let myHash = [-1, -1], cleanLocal = 0, cleanRemote = 0, lastSend = 0, pingMs = 0;
-        let stalls = 0, desync = -1, closed = false, started = false;
+    // ---- state
+    const inputs = [new Map(), new Map()];                  // player -> (frame -> mask)
+    const mine = new Map(), theirs = new Map();
+    const rtts = [];
+    let D = 0, frame = 0, nextLocal = 0, recvUpTo = -1, theirAck = -1, lastTheirHash = -1;
+    let myHash = [-1, -1], cleanLocal = 0, cleanRemote = 0, lastSend = 0, pingMs = 0;
+    let stalls = 0, desync = -1, lastRecv = performance.now();
 
-        const ramHash = () => {
-            M._gd_serialize(stateBuf, stateSize);
-            return M._gd_hash(stateBuf + 0x9025, 0x200000) >>> 0;
-        };
-        const compare = (f) => {
-            if (mine.has(f) && theirs.has(f)) {
-                if (mine.get(f) !== theirs.get(f) && desync < 0) desync = f;
-                mine.delete(f); theirs.delete(f);
-            }
-        };
-        const advance = () => { while (inputs[other].has(recvUpTo + 1)) recvUpTo++; };
-        const stats = () => {
-            const s = [...rtts].sort((a, b) => a - b);
-            return { med: s.length ? s[s.length >> 1] : 0, p90: s.length ? s[Math.min(s.length - 1, Math.floor(s.length * 0.9))] : 100 };
-        };
+    const ramHash = () => {
+        M._gd_serialize(stateBuf, stateSize);
+        return M._gd_hash(stateBuf + 0x9025, 0x200000) >>> 0;
+    };
+    const compare = (f) => {
+        if (mine.has(f) && theirs.has(f)) {
+            if (mine.get(f) !== theirs.get(f) && desync < 0) desync = f;
+            mine.delete(f); theirs.delete(f);
+        }
+    };
+    const advance = () => { while (inputs[other].has(recvUpTo + 1)) recvUpTo++; };
+    const stats = () => {
+        const s = [...rtts].sort((a, b) => a - b);
+        return { med: s.length ? s[s.length >> 1] : 0, p90: s.length ? s[Math.min(s.length - 1, Math.floor(s.length * 0.9))] : 100 };
+    };
 
-        // game packet: "i,ack,hashFrame,hash,startFrame,m,m,m..."
-        const onInputs = (p) => {
-            theirAck = Math.max(theirAck, +p[1]);
-            const hf = +p[2];
-            if (hf > lastTheirHash) { lastTheirHash = hf; theirs.set(hf, +p[3]); compare(hf); }
-            const start = +p[4];
-            for (let k = 5; k < p.length; k++) {
-                const f = start + k - 5;
-                if (f > recvUpTo) inputs[other].set(f, +p[k]);
-            }
-            advance();
-        };
-        dc.onmessage = (e) => {
-            const p = e.data.split(",");
-            if (p[0] === "i") onInputs(p);
-            else if (p[0] === "p") sendG(`q,${p[1]}`);
-            else if (p[0] === "q") rtts.push(performance.now() - +p[1]);
-        };
-        dc.onclose = cc.onclose = () => { closed = true; hud.textContent = "peer disconnected"; };
+    // game packet: "i,ack,hashFrame,hash,startFrame,m,m,m..."
+    const onInputs = (p) => {
+        theirAck = Math.max(theirAck, +p[1]);
+        const hf = +p[2];
+        if (hf > lastTheirHash) { lastTheirHash = hf; theirs.set(hf, +p[3]); compare(hf); }
+        const start = +p[4];
+        for (let k = 5; k < p.length; k++) {
+            const f = start + k - 5;
+            if (f > recvUpTo) inputs[other].set(f, +p[k]);
+        }
+        advance();
+    };
+    dc.onmessage = (e) => {
+        lastRecv = performance.now();
+        const p = e.data.split(",");
+        if (p[0] === "i") onInputs(p);
+        else if (p[0] === "p") sendG(`q,${p[1]}`);
+        else if (p[0] === "q") rtts.push(performance.now() - +p[1]);
+    };
+    dc.onclose = cc.onclose = () => {
+        closed = true;
+        if (started) showGone(); else rejectGone(new Error("The other player left"));
+    };
 
-        const sendPacket = () => {                              // resend everything the peer hasn't acked
-            const start = Math.max(theirAck + 1, D);
-            const a = ["i", recvUpTo, myHash[0], myHash[1], start];
-            for (let f = start; f < nextLocal && a.length < 45; f++) a.push(inputs[port].get(f) ?? 0);
-            sendG(a.join(","));
-        };
+    // tell the other side right away when this tab closes (the browser's own timeout takes 15-30 s)
+    addEventListener("pagehide", () => { try { cc.send("bye"); } catch { } });
 
-        const step = () => {
-            if (closed) return false;
-            while (nextLocal <= frame + D) { inputs[port].set(nextLocal, sample()); nextLocal++; }
-            const now = performance.now();
-            if (now - lastSend >= 8) { sendPacket(); lastSend = now; }   // also runs while stalled
-            const m0 = frame < D ? 0 : inputs[0].get(frame);
-            const m1 = frame < D ? 0 : inputs[1].get(frame);
-            if (m0 === undefined || m1 === undefined) { stalls++; return false; }
-            const limL = Math.min(theirAck, frame - 2);
-            while (cleanLocal <= limL) inputs[port].delete(cleanLocal++);
-            while (cleanRemote <= frame - 2) inputs[other].delete(cleanRemote++);
-            M._gd_set_pad(0, m0); M._gd_set_pad(1, m1);
-            M._gd_run(); pushAudio();
-            if (frame % 60 === 0) {
-                const h = ramHash(); myHash = [frame, h]; mine.set(frame, h); compare(frame);
-                if (mine.size > 10) mine.delete(mine.keys().next().value);
-                if (theirs.size > 10) theirs.delete(theirs.keys().next().value);
-            }
-            if (frame % 30 === 0)
-                hud.textContent = desync >= 0 ? `DESYNC at frame ${desync}`
-                    : `P${port + 1} | frame ${frame} | stalls ${stalls} | delay ${D}f | ping ${pingMs}ms`;
-            frame++;
-            return true;
-        };
+    const sendPacket = () => {                              // resend everything the peer hasn't acked
+        const start = Math.max(theirAck + 1, D);
+        const a = ["i", recvUpTo, myHash[0], myHash[1], start];
+        for (let f = start; f < nextLocal && a.length < 45; f++) a.push(inputs[port].get(f) ?? 0);
+        sendG(a.join(","));
+    };
 
-        const begin = (d) => {
-            if (started) return;
-            started = true;
-            D = d; nextLocal = D; recvUpTo = D - 1;
-            pingMs = Math.round(stats().med);
-            advance();
-            run(step);
-        };
-        cc.onmessage = (e) => { const [t, v] = e.data.split(","); if (t === "d" && port === 1) begin(+v); };
+    const step = () => {
+        if (closed) return false;
+        if (performance.now() - lastRecv > 10000) { closed = true; showGone(); return false; }   // peer went silent
+        while (nextLocal <= frame + D) { inputs[port].set(nextLocal, sample()); nextLocal++; }
+        const now = performance.now();
+        if (now - lastSend >= 8) { sendPacket(); lastSend = now; }   // also runs while stalled
+        const m0 = frame < D ? 0 : inputs[0].get(frame);
+        const m1 = frame < D ? 0 : inputs[1].get(frame);
+        if (m0 === undefined || m1 === undefined) { stalls++; return false; }
+        const limL = Math.min(theirAck, frame - 2);
+        while (cleanLocal <= limL) inputs[port].delete(cleanLocal++);
+        while (cleanRemote <= frame - 2) inputs[other].delete(cleanRemote++);
+        M._gd_set_pad(0, m0); M._gd_set_pad(1, m1);
+        M._gd_run(); pushAudio();
+        if (frame % 60 === 0) {
+            const h = ramHash(); myHash = [frame, h]; mine.set(frame, h); compare(frame);
+            if (mine.size > 10) mine.delete(mine.keys().next().value);
+            if (theirs.size > 10) theirs.delete(theirs.keys().next().value);
+        }
+        if (frame % 30 === 0)
+            hud.textContent = desync >= 0 ? `DESYNC at frame ${desync}`
+                : `P${port + 1} | frame ${frame} | stalls ${stalls} | delay ${D}f | ping ${pingMs}ms`;
+        frame++;
+        return true;
+    };
 
-        // ---- measure the connection, host picks the input delay and tells the guest
-        setStatus("Measuring connection...");
+    const begin = (d) => {
+        if (started) return;
+        started = true; resolveStart();
+        lastRecv = performance.now();
+        D = d; nextLocal = D; recvUpTo = D - 1;
+        pingMs = Math.round(stats().med);
+        advance();
+        run(step);
+    };
+
+    // ---- ready handshake, then measure the connection; the host picks the input delay and tells the guest
+    const readyInfo = () => setInfo(`Connected. You are Player ${port + 1}. ` +
+        (myReady ? "Waiting for the other player..." : peerReady ? "The other player is ready. Press Ready when you are." : "Press Ready when you're set."));
+    const go = async () => {
+        if (!(myReady && peerReady) || going) return;
+        going = true;
+        setInfo("Measuring connection...");
         for (let i = 0; i < 30; i++) { sendG(`p,${performance.now()}`); await new Promise((r) => setTimeout(r, 40)); }
         await new Promise((r) => setTimeout(r, 300));
+        if (started || closed) return;
         if (port === 0) {
             const d = Math.max(3, Math.min(12, Math.ceil(stats().p90 / 2 / 16.67) + 2));
             sendC(`d,${d}`);
             begin(d);
-        } else if (!started) setStatus("Waiting for host...");
-    } catch (e) {
-        console.error(e); setStatus("Error: " + e.message); $("start").disabled = $("online").disabled = false;
-    }
-};
+        } else setInfo("Waiting for the host...");
+    };
+    cc.onmessage = (e) => {
+        const [t, v] = e.data.split(",");
+        if (t === "id") { peerId = v; resolveId(); }
+        else if (t === "r") { peerReady = true; if (idOk) { readyInfo(); go().catch(rejectGone); } }
+        else if (t === "d" && port === 1) begin(+v);
+        else if (t === "bye") { closed = true; if (started) showGone(); else rejectGone(new Error("The other player left")); }
+    };
+    $("lobReady").onclick = () => {
+        myReady = true; $("lobReady").disabled = true; sendC("r"); readyInfo(); go().catch(rejectGone);
+    };
+
+    // both players must have the same BIOS and disc, or the game desyncs
+    cc.send(`id,${ident}`);
+    await until(idP);
+    if (peerId !== ident) throw new Error("Your BIOS or disc differs from the other player's");
+    idOk = true;
+    show("lobCopy", false); show("lobLink", false);
+    $("lobReady").disabled = false; show("lobReady", true);
+    readyInfo();
+    if (peerReady) go().catch(rejectGone);
+    await until(startedP);
+}
 
 async function refreshSetup() {
     const b = await getFile("bios"), d = await getFile("disc");
@@ -305,4 +416,5 @@ $("discFile").onchange = async (e) => {
     await putFile("disc", f); setStatus(""); refreshSetup();
 };
 initControls({ onClose: () => { keyMask = 0; } });
+$("menuRow").after($("ctlBtn"));                       // Controls button goes under Co-op Online
 refreshSetup();

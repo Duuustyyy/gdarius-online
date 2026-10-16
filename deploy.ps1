@@ -3,7 +3,7 @@ $root = "C:\Users\prueb\Downloads\gdarius-web"
 $dist = "$root\cf\dist"
 Remove-Item $dist -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory "$dist\wasm" | Out-Null
-foreach ($f in @("index.html", "main.js", "net.js", "storage.js")) {
+foreach ($f in @("index.html", "main.js", "net.js", "storage.js", "controls.js", "logo.png", "icon.ico")) {
   Copy-Item "$root\web\$f" $dist
 }
 Copy-Item "$root\web\wasm\core.mjs" "$dist\wasm"
