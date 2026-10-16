@@ -3,6 +3,10 @@ import { connect } from "./net.js";
 import { putFile, getFile } from "./storage.js";
 import { KEYMAP, PADMAP, initControls } from "./controls.js";
 
+// Bump this string on EVERY deploy. Both online players must have the same value,
+// otherwise they get a clear "refresh the page" error instead of a silent desync.
+const BUILD = "2026-10-16a";
+
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen"), ctx = canvas.getContext("2d");
 const setStatus = (s) => ($("status").textContent = s);
@@ -14,6 +18,7 @@ addEventListener("keydown", (e) => {
     if (typing(e)) return;
     if (e.code in KEYMAP) { keyMask |= 1 << KEYMAP[e.code]; e.preventDefault(); }
     if (e.code === "KeyF") document.documentElement.requestFullscreen?.();
+    if (e.code === "KeyM" && !(e.code in KEYMAP)) toggleMute();
 });
 addEventListener("keyup", (e) => {
     if (typing(e)) return;
@@ -58,14 +63,43 @@ class Q extends AudioWorkletProcessor {
 }
 registerProcessor("q", Q);`;
 
-let M, FS, actx, audioNode, stateBuf, stateSize;
+let M, FS, actx, audioNode, gainNode, stateBuf, stateSize;
+
+// ---- mute (M key or the small button shown during the game; remembered between visits)
+let muted = false;
+try { muted = localStorage.getItem("gdarius.muted") === "1"; } catch { }
+let muteBtn = null;
+function applyMute() {
+    if (gainNode) gainNode.gain.value = muted ? 0 : 1;
+    if (muteBtn) muteBtn.textContent = muted ? "Sound: off (M)" : "Sound: on (M)";
+}
+function toggleMute() {
+    muted = !muted;
+    try { localStorage.setItem("gdarius.muted", muted ? "1" : "0"); } catch { }
+    applyMute();
+}
+function makeMuteButton() {
+    if (muteBtn) return;
+    muteBtn = document.createElement("button");
+    muteBtn.type = "button";
+    muteBtn.style.cssText = "position:fixed;top:8px;right:8px;z-index:20;padding:4px 10px;font:12px system-ui,sans-serif;" +
+        "color:#cfe3ff;background:#0a1830b0;border:1px solid #2b8cff66;border-radius:6px;cursor:pointer;opacity:.75";
+    muteBtn.onmouseenter = () => (muteBtn.style.opacity = "1");
+    muteBtn.onmouseleave = () => (muteBtn.style.opacity = ".75");
+    muteBtn.onclick = () => { toggleMute(); muteBtn.blur(); };
+    document.body.appendChild(muteBtn);
+    applyMute();
+}
 
 async function setupAudio() {
     actx = new AudioContext({ sampleRate: 44100 });
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
     await actx.audioWorklet.addModule(url);
     audioNode = new AudioWorkletNode(actx, "q", { outputChannelCount: [2] });
-    audioNode.connect(actx.destination);
+    gainNode = actx.createGain();
+    audioNode.connect(gainNode);
+    gainNode.connect(actx.destination);
+    applyMute();
     await actx.resume();
 }
 
@@ -138,6 +172,7 @@ function run(stepFn) {
     document.activeElement?.blur?.();                     // don't leave the room-code box focused
     $("title").style.display = "none";
     canvas.style.display = "block";
+    makeMuteButton();
     const FRAME = 1000 / M._gd_fps();
     let acc = 0, last = performance.now();
     const tick = (now) => {
@@ -241,7 +276,7 @@ async function enter(code, mode) {
 async function onlineSession({ port, dc, cc }) {
     const other = 1 - port, hud = $("hud");
     let started = false, closed = false, idOk = false;
-    let myReady = false, peerReady = false, going = false, peerId = null;
+    let myReady = false, peerReady = false, going = false, peerId = null, peerBuild = null;
     let resolveId, resolveStart, rejectGone;
     const idP = new Promise((r) => (resolveId = r));
     const startedP = new Promise((r) => (resolveStart = r));
@@ -377,8 +412,8 @@ async function onlineSession({ port, dc, cc }) {
         } else setInfo("Waiting for the host...");
     };
     cc.onmessage = (e) => {
-        const [t, v] = e.data.split(",");
-        if (t === "id") { peerId = v; resolveId(); }
+        const [t, v, w] = e.data.split(",");
+        if (t === "id") { peerId = v; peerBuild = w; resolveId(); }
         else if (t === "r") { peerReady = true; if (idOk) { readyInfo(); go().catch(rejectGone); } }
         else if (t === "d" && port === 1) begin(+v);
         else if (t === "bye") { closed = true; if (started) showGone(); else rejectGone(new Error("The other player left")); }
@@ -388,8 +423,9 @@ async function onlineSession({ port, dc, cc }) {
     };
 
     // both players must have the same BIOS and disc, or the game desyncs
-    cc.send(`id,${ident}`);
+    cc.send(`id,${ident},${BUILD}`);
     await until(idP);
+    if (peerBuild !== BUILD) throw new Error("You and the other player are running different versions of the game. Both of you: refresh the page (Ctrl+F5) and try again.");
     if (peerId !== ident) throw new Error("Your BIOS or disc differs from the other player's");
     idOk = true;
     show("lobCopy", false); show("lobLink", false);
