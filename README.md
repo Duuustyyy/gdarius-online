@@ -39,3 +39,8 @@ terms. See LICENSE.
 4. Serve `web/` locally with `node serve.mjs`.
 
 The core is used unmodified. It is licensed under GPL version 2 (see LICENSE).
+
+## Credits
+- G-Darius is a work of Taito Corporation. This is an unofficial fan project and is not affiliated with or endorsed by Taito. No game data is included.
+- Emulation core: PCSX-ReARMed (libretro fork), GPL.
+- PlayStation is a trademark of Sony Interactive Entertainment.
