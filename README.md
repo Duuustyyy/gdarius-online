@@ -1,4 +1,4 @@
-# Silver Hawk Online
+# G-Darius Online
 
 A browser frontend with online 2-player co-op for a PlayStation 1 shoot-'em-up, built on the
 PCSX-ReARMed libretro core compiled to WebAssembly. Lockstep netcode over WebRTC.
