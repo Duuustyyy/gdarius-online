@@ -1,4 +1,4 @@
-name = "g-darius-online"
+name = "g-darius"
 main = "worker/index.js"
 compatibility_date = "2026-10-01"
 
@@ -6,7 +6,7 @@ compatibility_date = "2026-10-01"
 directory = "./dist"
 
 [[durable_objects.bindings]]
-name = "ROOMS"
+name = "g-darius"
 class_name = "Room"
 
 [[migrations]]
