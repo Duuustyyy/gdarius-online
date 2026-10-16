@@ -1,28 +1,29 @@
 import createCore from "./wasm/core.mjs";
 import { connect } from "./net.js";
 import { putFile, getFile } from "./storage.js";
+import { KEYMAP, PADMAP, initControls } from "./controls.js";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen"), ctx = canvas.getContext("2d");
 const setStatus = (s) => ($("status").textContent = s);
 
-// ---- input
-const KEYS = {
-    ArrowUp: 4, ArrowDown: 5, ArrowLeft: 6, ArrowRight: 7, KeyZ: 0, KeyX: 8,
-    KeyA: 1, KeyS: 9, KeyQ: 10, KeyW: 11, Enter: 3, ShiftRight: 2, Backspace: 2
-};
+// ---- input (bindings come from controls.js and are changed on the title screen)
 let keyMask = 0;
+const typing = (e) => e.target instanceof HTMLInputElement;     // don't steal keys while typing the room code
 addEventListener("keydown", (e) => {
-    if (e.code in KEYS) { keyMask |= 1 << KEYS[e.code]; e.preventDefault(); }
+    if (typing(e)) return;
+    if (e.code in KEYMAP) { keyMask |= 1 << KEYMAP[e.code]; e.preventDefault(); }
     if (e.code === "KeyF") document.documentElement.requestFullscreen?.();
 });
-addEventListener("keyup", (e) => { if (e.code in KEYS) { keyMask &= ~(1 << KEYS[e.code]); e.preventDefault(); } });
-const PAD_MAP = { 0: 0, 1: 8, 2: 1, 3: 9, 4: 10, 5: 11, 6: 12, 7: 13, 8: 2, 9: 3, 12: 4, 13: 5, 14: 6, 15: 7 };
+addEventListener("keyup", (e) => {
+    if (typing(e)) return;
+    if (e.code in KEYMAP) { keyMask &= ~(1 << KEYMAP[e.code]); e.preventDefault(); }
+});
 function padMask() {
     let m = 0;
     for (const gp of navigator.getGamepads()) {
         if (!gp) continue;
-        for (const [b, id] of Object.entries(PAD_MAP)) if (gp.buttons[b]?.pressed) m |= 1 << id;
+        for (const [b, id] of Object.entries(PADMAP)) if (gp.buttons[b]?.pressed) m |= 1 << id;
         const x = gp.axes[0] || 0, y = gp.axes[1] || 0;
         if (x < -0.5) m |= 1 << 6; if (x > 0.5) m |= 1 << 7;
         if (y < -0.5) m |= 1 << 4; if (y > 0.5) m |= 1 << 5;
@@ -131,6 +132,7 @@ async function boot() {
 }
 
 function run(stepFn) {
+    document.activeElement?.blur?.();                     // don't leave the room-code box focused
     $("title").style.display = "none";
     canvas.style.display = "block";
     const FRAME = 1000 / M._gd_fps();
@@ -302,4 +304,5 @@ $("discFile").onchange = async (e) => {
     if (!/\.chd$/i.test(f.name)) return setStatus("Disc must be a .chd file (convert with chdman)");
     await putFile("disc", f); setStatus(""); refreshSetup();
 };
+initControls({ onClose: () => { keyMask = 0; } });
 refreshSetup();
