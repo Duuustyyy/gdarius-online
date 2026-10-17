@@ -5,7 +5,7 @@ import { KEYMAP, PADMAP, initControls } from "./controls.js";
 
 // Bump this string on EVERY deploy. Both online players must have the same value,
 // otherwise they get a clear "refresh the page" error instead of a silent desync.
-const BUILD = "2026-10-16a";
+const BUILD = "2026-10-16c";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen"), ctx = canvas.getContext("2d");
@@ -65,29 +65,67 @@ registerProcessor("q", Q);`;
 
 let M, FS, actx, audioNode, gainNode, stateBuf, stateSize;
 
-// ---- mute (M key or the small button shown during the game; remembered between visits)
-let muted = false;
-try { muted = localStorage.getItem("gdarius.muted") === "1"; } catch { }
-let muteBtn = null;
+// ---- volume (speaker button + slider shown during the game; M key mutes; both are remembered between visits)
+let muted = false, volume = 1;
+try {
+    muted = localStorage.getItem("gdarius.muted") === "1";
+    const v = parseFloat(localStorage.getItem("gdarius.volume"));
+    if (v >= 0 && v <= 1) volume = v;
+} catch { }
+let muteBtn = null, volSlider = null;
+function iconSvg(level) {                                // 0 = muted, 1 = low, 2 = high
+    const head = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/>';
+    const low = '<path d="M16.5 9.5a4 4 0 010 5"/>';
+    const high = '<path d="M19 6.5a8 8 0 010 11"/>';
+    const x = '<path d="M17 9l5 6M22 9l-5 6"/>';
+    return head + (level === 0 ? x : level === 1 ? low : low + high) + '</svg>';
+}
+function saveAudioPrefs() {
+    try {
+        localStorage.setItem("gdarius.muted", muted ? "1" : "0");
+        localStorage.setItem("gdarius.volume", String(volume));
+    } catch { }
+}
 function applyMute() {
-    if (gainNode) gainNode.gain.value = muted ? 0 : 1;
-    if (muteBtn) muteBtn.textContent = muted ? "Sound: off (M)" : "Sound: on (M)";
+    if (gainNode) gainNode.gain.value = muted ? 0 : volume * volume;   // squared = smoother feel
+    if (muteBtn) {
+        const lvl = muted || volume === 0 ? 0 : volume < 0.5 ? 1 : 2;
+        muteBtn.innerHTML = iconSvg(lvl);
+        muteBtn.title = muted ? "Unmute (M)" : "Mute (M)";
+    }
+    if (volSlider) volSlider.value = muted ? 0 : volume;
 }
 function toggleMute() {
     muted = !muted;
-    try { localStorage.setItem("gdarius.muted", muted ? "1" : "0"); } catch { }
+    if (!muted && volume === 0) volume = 0.5;              // unmuting from a zero slider
+    saveAudioPrefs();
     applyMute();
 }
 function makeMuteButton() {
     if (muteBtn) return;
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;top:8px;right:8px;z-index:20;display:flex;align-items:center;gap:8px;" +
+        "padding:4px 10px;color:#cfe3ff;background:#0a1830b0;border:1px solid #2b8cff66;border-radius:6px;opacity:.75";
+    box.onmouseenter = () => (box.style.opacity = "1");
+    box.onmouseleave = () => (box.style.opacity = ".75");
     muteBtn = document.createElement("button");
     muteBtn.type = "button";
-    muteBtn.style.cssText = "position:fixed;top:8px;right:8px;z-index:20;padding:4px 10px;font:12px system-ui,sans-serif;" +
-        "color:#cfe3ff;background:#0a1830b0;border:1px solid #2b8cff66;border-radius:6px;cursor:pointer;opacity:.75";
-    muteBtn.onmouseenter = () => (muteBtn.style.opacity = "1");
-    muteBtn.onmouseleave = () => (muteBtn.style.opacity = ".75");
+    muteBtn.style.cssText = "display:flex;align-items:center;padding:0;margin:0;background:none;border:0;color:inherit;cursor:pointer";
     muteBtn.onclick = () => { toggleMute(); muteBtn.blur(); };
-    document.body.appendChild(muteBtn);
+    volSlider = document.createElement("input");
+    volSlider.type = "range"; volSlider.min = "0"; volSlider.max = "1"; volSlider.step = "0.05";
+    volSlider.tabIndex = -1;
+    volSlider.setAttribute("aria-label", "Volume");
+    volSlider.style.cssText = "width:80px;margin:0;cursor:pointer;accent-color:#2b8cff";
+    volSlider.oninput = () => {
+        volume = +volSlider.value;
+        muted = volume === 0;
+        saveAudioPrefs();
+        applyMute();
+    };
+    volSlider.onchange = volSlider.onpointerup = () => volSlider.blur();   // give the arrow keys back to the game
+    box.append(muteBtn, volSlider);
+    document.body.appendChild(box);
     applyMute();
 }
 
@@ -242,7 +280,20 @@ $("lobCopy").onclick = async () => {
     catch { $("lobCopy").textContent = "Select the link below"; }
     setTimeout(() => ($("lobCopy").textContent = "Copy invite link"), 1800);
 };
+let waitBox = null;                                      // "waiting for the other player" banner (no pause needed: lockstep already waits)
+function showWait(msg) {
+    if (!waitBox) {
+        waitBox = document.createElement("div");
+        waitBox.style.cssText = "position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:25;padding:8px 16px;" +
+            "font:14px system-ui,sans-serif;color:#cfe3ff;background:#0a1830e0;border:1px solid #2b8cff66;border-radius:8px;pointer-events:none";
+        document.body.appendChild(waitBox);
+    }
+    if (waitBox.textContent !== msg) waitBox.textContent = msg;
+    waitBox.style.display = "block";
+}
+function hideWait() { if (waitBox) waitBox.style.display = "none"; }
 function showGone() {
+    hideWait();
     $("hud").textContent = "";
     show("gone", true);
 }
@@ -307,7 +358,7 @@ async function onlineSession({ port, dc, cc }) {
     const rtts = [];
     let D = 0, frame = 0, nextLocal = 0, recvUpTo = -1, theirAck = -1, lastTheirHash = -1;
     let myHash = [-1, -1], cleanLocal = 0, cleanRemote = 0, lastSend = 0, pingMs = 0;
-    let stalls = 0, desync = -1, lastRecv = performance.now();
+    let stalls = 0, desync = -1, lastRecv = performance.now(), peerHidden = false;
 
     const ramHash = () => {
         M._gd_serialize(stateBuf, stateSize);
@@ -352,6 +403,12 @@ async function onlineSession({ port, dc, cc }) {
     // tell the other side right away when this tab closes (the browser's own timeout takes 15-30 s)
     addEventListener("pagehide", () => { try { cc.send("bye"); } catch { } });
 
+    // tell the other side when this tab is hidden or shown again, so it waits instead of reporting a disconnect
+    document.addEventListener("visibilitychange", () => {
+        try { cc.send(`v,${document.hidden ? 0 : 1}`); } catch { }
+        if (!document.hidden) lastRecv = performance.now();   // don't judge the peer by the time we spent hidden
+    });
+
     const sendPacket = () => {                              // resend everything the peer hasn't acked
         const start = Math.max(theirAck + 1, D);
         const a = ["i", recvUpTo, myHash[0], myHash[1], start];
@@ -361,7 +418,11 @@ async function onlineSession({ port, dc, cc }) {
 
     const step = () => {
         if (closed) return false;
-        if (performance.now() - lastRecv > 10000) { closed = true; showGone(); return false; }   // peer went silent
+        const silent = performance.now() - lastRecv;
+        // A hidden tab stops sending (the browser pauses its game loop) but tells us so with "v,0": wait much longer for it.
+        if (silent > (peerHidden ? 120000 : 10000)) { closed = true; showGone(); return false; }
+        if (silent > 2500) showWait(peerHidden ? "The other player switched tabs. Waiting for them to come back..." : "Waiting for the other player...");
+        else hideWait();
         while (nextLocal <= frame + D) { inputs[port].set(nextLocal, sample()); nextLocal++; }
         const now = performance.now();
         if (now - lastSend >= 8) { sendPacket(); lastSend = now; }   // also runs while stalled
@@ -416,6 +477,7 @@ async function onlineSession({ port, dc, cc }) {
         if (t === "id") { peerId = v; peerBuild = w; resolveId(); }
         else if (t === "r") { peerReady = true; if (idOk) { readyInfo(); go().catch(rejectGone); } }
         else if (t === "d" && port === 1) begin(+v);
+        else if (t === "v") peerHidden = v === "0";
         else if (t === "bye") { closed = true; if (started) showGone(); else rejectGone(new Error("The other player left")); }
     };
     $("lobReady").onclick = () => {
